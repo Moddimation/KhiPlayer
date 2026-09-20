@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "khinsider-remote",
+  "description": "Lets the khinsider site call only the two presence commands.",
+  "windows": ["main"],
+  "remote": { "urls": ["https://downloads.khinsider.com/*"] },
+  "permissions": ["allow-set-presence", "allow-clear-presence"]
+}

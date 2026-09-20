@@ -1,0 +1,26 @@
+[package]
+name = "khinsider-app"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "khinsider_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+
+# Discord IPC only exists on desktop
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+discord-rich-presence = "1.1"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

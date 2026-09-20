@@ -1,0 +1,1 @@
+{"khinsider-remote":{"identifier":"khinsider-remote","description":"Lets the khinsider site call only the two presence commands.","remote":{"urls":["https://downloads.khinsider.com/*"]},"local":true,"windows":["main"],"permissions":["allow-set-presence","allow-clear-presence"]}}
