@@ -61,20 +61,62 @@ if (-not (Test-Path (Join-Path $Root 'src-tauri\Cargo.toml'))) {
 }
 
 # ------------------------------------------------------------------ 1. C++ Build Tools
-function Test-Msvc {
-  $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-  if (-not (Test-Path $vswhere)) { return $false }
-  $found = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+$VcComponent = 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64'
+$VsWhere     = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+$VsInstaller = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\setup.exe'
+
+function Get-VsInstalls {
+  # Any VS product (Community/Professional/Enterprise/BuildTools/Preview), not just ones with the C++ workload.
+  if (-not (Test-Path $VsWhere)) { return @() }
+  $json = & $VsWhere -all -products * -format json 2>$null
+  if (-not $json) { return @() }
+  try { return @(($json | Out-String | ConvertFrom-Json)) } catch { return @() }
+}
+function Test-VsHasVcTools($InstallPath) {
+  if (-not (Test-Path $VsWhere)) { return $false }
+  $found = & $VsWhere -path $InstallPath -requires $VcComponent -property installationPath
   return [bool]$found
 }
-if (Test-Msvc) {
-  Say 'C++ Build Tools: found.'
+
+$vsInstalls    = Get-VsInstalls
+$vsWithVcTools = $vsInstalls | Where-Object { Test-VsHasVcTools $_.installationPath } | Select-Object -First 1
+$doFreshInstall = $false
+
+if ($vsWithVcTools) {
+  Say "C++ Build Tools: found (via $($vsWithVcTools.displayName) at $($vsWithVcTools.installationPath))."
+} elseif ($vsInstalls.Count -gt 0) {
+  # There's a Visual Studio install already, it's just missing the C++ workload.
+  # Add the component to it instead of installing a whole separate copy.
+  $target = $vsInstalls | Select-Object -First 1
+  Say "Found existing Visual Studio: $($target.displayName) at $($target.installationPath)"
+  Say 'It is missing the "Desktop development with C++" component needed to build this app.'
+  $resp = Read-Host 'Add that component to it now? [Y/n] (or type "new" to install a separate Build Tools copy instead)'
+  if ($resp -match '^(n|no)$') {
+    throw 'C++ Build Tools are required to build this app. Re-run and choose Y, or add the component yourself via the Visual Studio Installer.'
+  } elseif ($resp -match '^new$') {
+    $doFreshInstall = $true
+  } else {
+    if (-not (Test-Path $VsInstaller)) { throw "Visual Studio Installer not found at $VsInstaller." }
+    Say 'Adding the C++ workload to your existing install (this can take a while)...'
+    $code = Invoke-Elevated $VsInstaller "modify --installPath `"$($target.installationPath)`" --add $VcComponent --includeRecommended --quiet --norestart --wait"
+    if ($code -notin 0, 1641, 3010) { throw "Modify failed (exit code $code)." }
+    if (-not (Test-VsHasVcTools $target.installationPath)) { throw 'C++ workload still not detected after modify. Reboot and run this script again.' }
+  }
 } else {
-  Say 'C++ Build Tools: missing. Downloading and installing (several GB, this takes a while)...'
+  Say 'No Visual Studio installation found.'
+  $resp = Read-Host 'Download and install Visual Studio Build Tools now? Several GB, several minutes [Y/n]'
+  if ($resp -match '^(n|no)$') { throw 'C++ Build Tools are required to build this app.' }
+  $doFreshInstall = $true
+}
+
+if ($doFreshInstall) {
+  Say 'Downloading and installing Visual Studio Build Tools (several GB, this takes a while)...'
   $installer = Get-Download 'https://aka.ms/vs/17/release/vs_BuildTools.exe' 'vs_BuildTools.exe'
   $code = Invoke-Elevated $installer '--quiet --wait --norestart --nocache --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended'
   if ($code -notin 0, 1641, 3010) { throw "C++ Build Tools installer failed (exit code $code)." }
-  if (-not (Test-Msvc)) { throw 'C++ Build Tools still not detected after install. Reboot and run this script again.' }
+  if (-not (Test-VsHasVcTools (Get-VsInstalls | Select-Object -First 1).installationPath)) {
+    throw 'C++ Build Tools still not detected after install. Reboot and run this script again.'
+  }
 }
 
 # ------------------------------------------------------------------ 2. WebView2 runtime
