@@ -19,7 +19,7 @@ TOOLS="$DATA_DIR/khinsider-build"          # user-local JDK + signing key for An
 say() { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
-MODE=desktop; ABIS="aarch64"; UNINSTALL=0
+MODE=desktop; ABIS="armv7"; UNINSTALL=0
 for arg in "$@"; do
   case "$arg" in
     --android)   MODE=android ;;
