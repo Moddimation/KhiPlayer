@@ -3,8 +3,8 @@
 //
 // Discord layout produced:
 //   line 1 (bold)  track name
-//   line 2         publisher (e.g. "Nintendo")   <- falls back to developer, then album
-//   line 3         album / game name (image hover text)
+//   line 2         by Publisher                  (falls back to developer)
+//   line 3         in Game (Platform)            ("(Platform)" is dropped when the site lists none)
 (() => {
   if (window.__khiPresence) return;
   if (location.hostname !== 'downloads.khinsider.com') return;
@@ -32,12 +32,27 @@
 
   // Album pages carry the credits ("Developed by: / Published by:"). Playlist pages do not,
   // so we read them from the album page (same-origin fetch) and cache per album.
+  // "Platforms: <a>DS</a><br>" -> ['DS']
+  function platformsOf(doc) {
+    for (const p of doc.querySelectorAll('#pageContent p')) {
+      const nodes = [...p.childNodes];
+      const i = nodes.findIndex((n) => n.nodeType === 3 && /Platforms?:/i.test(n.textContent));
+      if (i < 0) continue;
+      const out = [];
+      for (let j = i + 1; j < nodes.length && nodes[j].nodeName !== 'BR'; j++) {
+        if (nodes[j].nodeName === 'A') out.push(nodes[j].textContent.trim());
+      }
+      return out.filter(Boolean);
+    }
+    return [];
+  }
   function parseAlbum(doc) {
     const img = doc.querySelector('#pageContent .albumImage img');
     return {
       title: doc.querySelector('#pageContent h2')?.textContent.trim() || '',
       publishers: names(doc, 'publisher'),
       developers: names(doc, 'developer'),
+      platforms: platformsOf(doc),
       cover: img ? abs(img.getAttribute('src')) : undefined,
     };
   }
@@ -83,16 +98,21 @@
         || [...document.querySelectorAll(`a[href$="/album/${slug}"]`)].map((a) => a.textContent.trim()).find(Boolean)
         || '';
       const who = credit(info);
+      const platform = info?.platforms?.join(', ') || '';
       const cover = info?.cover
         || abs(document.querySelector(`a[href$="/album/${slug}"] img`)?.getAttribute('src'));
 
       const paused = audio.paused;
       const dur = audio.duration;
       const start = Date.now() - Math.round(audio.currentTime * 1000);
+      // Build "by X" / "in Game (Platform)" while keeping the suffix inside Discord's 128-char limit
+      const line = (prefix, name, suffix = '') =>
+        prefix + name.slice(0, Math.max(0, 128 - prefix.length - suffix.length)) + suffix;
+      const gameLine = album ? line('in ', album, platform ? ` (${platform})` : '') : '';
       const p = {
         details: clamp(track),
-        state: clamp(who || album || 'KHInsider'),        // line 2: publisher
-        imageText: who && album ? clamp(album) : undefined, // line 3: game
+        state: clamp(who ? line('by ', who) : gameLine || 'KHInsider'),  // line 2
+        imageText: who && gameLine ? clamp(gameLine) : undefined,        // line 3
         image: cover,
         url: slug ? `${ORIGIN}/game-soundtracks/album/${slug}` : undefined,
         paused,

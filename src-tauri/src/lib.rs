@@ -5,7 +5,9 @@ const START_URL: &str = "https://downloads.khinsider.com/";
 // Create an application at https://discord.com/developers/applications and paste its Application ID here.
 const DISCORD_APP_ID: &str = "1551290011939512440";
 
+// On mobile there is no Discord IPC, so the presence fields are received but unused.
 #[derive(Deserialize)]
+#[cfg_attr(not(desktop), allow(dead_code))]
 #[serde(rename_all = "camelCase")]
 pub struct Presence {
     details: String,
