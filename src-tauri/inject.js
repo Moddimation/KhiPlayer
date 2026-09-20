@@ -1,121 +1,129 @@
-// Runs on every downloads.khinsider.com page (Tauri initialization script).
-// Supports two page types (verified against saved pages):
-//   album page: <audio id="audio1">, track in #audioplayerCurrentSong, cover in .albumImage img
-//   track page: <audio id="audio">,  "Song name: <b>..</b>" in #pageContent, cover fetched from the album link
+// Runs inside every khinsider page (Tauri initialization_script).
+// Reads the site's own player (#audio1) and forwards it to Rust -> Discord Rich Presence.
+//
+// Discord layout produced:
+//   line 1 (bold)  track name
+//   line 2         publisher (e.g. "Nintendo")   <- falls back to developer, then album
+//   line 3         album / game name (image hover text)
 (() => {
-  if (window.__khiRpc || !window.__TAURI__ || !window.__TAURI__.core) return;
-  window.__khiRpc = true;
+  if (window.__khiPresence) return;
+  if (location.hostname !== 'downloads.khinsider.com') return;
+  window.__khiPresence = true;
 
+  // 'publisher' -> "Nintendo" (falls back to developer if the site lists no publisher)
+  // 'developer' -> developer only
+  // 'both'      -> "Developer / Publisher" (collapsed to one name when they are identical)
+  const CREDIT = 'publisher';
+
+  const ORIGIN = location.origin;
   const invoke = (cmd, args) => {
     try { return window.__TAURI__.core.invoke(cmd, args).catch(() => {}); } catch (_) {}
   };
+  const clamp = (s) => {
+    s = String(s ?? '').replace(/\s+/g, ' ').trim().slice(0, 128);
+    return s.length === 1 ? s + '\u200b' : s; // Discord requires >= 2 chars
+  };
+  const abs = (u) => { try { return new URL(u, location.href).href; } catch (_) { return undefined; } };
+  const slugFromAudio = (a) => (a.currentSrc || a.src || '').match(/\/soundtracks\/([^/]+)\//)?.[1];
+  const slugFromPath = () => location.pathname.match(/\/game-soundtracks\/album\/([^/]+)/)?.[1];
+  const names = (doc, kind) => [...new Set(
+    [...doc.querySelectorAll(`#pageContent a[href*="/game-soundtracks/${kind}/"]`)]
+      .map((a) => a.textContent.trim()).filter(Boolean))];
 
-  const DEBOUNCE_MS = 800;              // Discord rate-limits presence updates
-  const CLEAR_AFTER_PAUSE_MS = 10 * 60e3;
-  const txt = (el) => (el && el.textContent ? el.textContent.trim() : '');
-
-  function readAlbumMeta(doc) {
-    const h2 = doc.querySelector('h2');
-    const img = doc.querySelector('.albumImage img');
-    const pub = doc.querySelector('a[href*="/game-soundtracks/publisher/"]');
+  // Album pages carry the credits ("Developed by: / Published by:"). Playlist pages do not,
+  // so we read them from the album page (same-origin fetch) and cache per album.
+  function parseAlbum(doc) {
+    const img = doc.querySelector('#pageContent .albumImage img');
     return {
-      title: txt(h2) || (doc.title || '').trim(),
-      thumb: img ? img.src : '',
-      publisher: txt(pub),
+      title: doc.querySelector('#pageContent h2')?.textContent.trim() || '',
+      publishers: names(doc, 'publisher'),
+      developers: names(doc, 'developer'),
+      cover: img ? abs(img.getAttribute('src')) : undefined,
     };
   }
-
-  function trackPageSong() {
-    const p = [...document.querySelectorAll('#pageContent p')].find((x) => /Song name:/i.test(x.textContent));
-    if (!p) return '';
-    const bs = p.querySelectorAll('b');
-    return txt(bs.length > 1 ? bs[1] : bs[0]);
+  const cache = new Map();
+  function albumInfo(slug) {
+    if (!slug) return Promise.resolve(null);
+    if (!cache.has(slug)) {
+      const p = slugFromPath() === slug && document.querySelector('#pageContent h2')
+        ? Promise.resolve(parseAlbum(document))
+        : fetch(`${ORIGIN}/game-soundtracks/album/${slug}`, { credentials: 'same-origin' })
+            .then((r) => (r.ok ? r.text() : Promise.reject(r.status)))
+            .then((html) => parseAlbum(new DOMParser().parseFromString(html, 'text/html')));
+      cache.set(slug, p.catch(() => { cache.delete(slug); return null; }));
+    }
+    return cache.get(slug);
+  }
+  function credit(info) {
+    if (!info) return '';
+    const pub = info.publishers.join(', '), dev = info.developers.join(', ');
+    if (CREDIT === 'developer') return dev || pub;
+    if (CREDIT === 'both') return dev && pub && dev !== pub ? `${dev} / ${pub}` : pub || dev;
+    return pub || dev;
   }
 
-  function init() {
-    invoke('clear_presence');           // new page => drop stale presence
+  function start() {
+    const audio = document.getElementById('audio1');
+    if (!audio) return;
 
-    const albumAudio = document.getElementById('audio1');
-    // fall back to any <audio> so unseen page types (e.g. playlists) still work
-    const audio = albumAudio || document.getElementById('audio') || document.querySelector('audio');
-    if (!audio) return;                 // home/search/etc. have no player
+    let played = false, seq = 0, timer = 0, last = null;
 
-    const isAlbumPage = !!albumAudio;
-    const trackEl = document.getElementById('audioplayerCurrentSong');
-    const getTrack = () =>
-      txt(trackEl) ||
-      trackPageSong() ||
-      txt(document.querySelector('#songlist tr.plSel td.clickable-row a')) ||
-      '';
+    async function sync() {
+      const my = ++seq;
+      if (audio.ended) return clearPresence();
+      if (!played || !(audio.currentSrc || audio.src)) return;
 
-    let meta = readAlbumMeta(document);
-    if (!isAlbumPage) {
-      // track pages have no cover: read it once from the album page (same origin)
-      const a = document.querySelector('#pageContent a[href^="/game-soundtracks/album/"]');
-      if (a) {
-        fetch(a.href, { credentials: 'include' })
-          .then((r) => r.text())
-          .then((html) => {
-            const m = readAlbumMeta(new DOMParser().parseFromString(html, 'text/html'));
-            meta = { title: meta.title || m.title, thumb: m.thumb, publisher: m.publisher };
-          })
-          .catch(() => {});
-      }
-    }
+      const slug = slugFromAudio(audio) || slugFromPath();
+      const track = document.getElementById('audioplayerCurrentSong')?.textContent.trim() || 'Unknown track';
+      const info = await albumInfo(slug);
+      if (my !== seq) return; // a newer update superseded this one
 
-    let started = false, timer = null, pauseTimer = null;
+      // Fallback when the album page could not be read: find the album link on this page.
+      const album = info?.title
+        || [...document.querySelectorAll(`a[href$="/album/${slug}"]`)].map((a) => a.textContent.trim()).find(Boolean)
+        || '';
+      const who = credit(info);
+      const cover = info?.cover
+        || abs(document.querySelector(`a[href$="/album/${slug}"] img`)?.getAttribute('src'));
 
-    function push() {
-      // playlist pages mix albums, so album name + cover change per track and live in the player itself
-      const curAlbum = txt(document.getElementById('audioplayerCurrentlyPlayingAlbumName')) || meta.title;
-      const curImg = document.querySelector('#audioplayerCurrentlyPlayingSongImage img');
-      const curThumb = (curImg && curImg.src) || meta.thumb;
-      const track = getTrack();
-      if (!started || !track) return;
-
-      try {
-        if ('mediaSession' in navigator && window.MediaMetadata) {
-          navigator.mediaSession.metadata = new MediaMetadata({
-            title: track, artist: meta.publisher, album: curAlbum,
-            artwork: curThumb ? [{ src: curThumb }] : [],
-          });
-        }
-      } catch (_) {}
-
-      const presence = {
-        details: track,
-        state: curAlbum,
-        image: curThumb || null,
-        imageText: curAlbum,
-        paused: audio.paused,
-        url: location.origin + location.pathname,
-        start: null,
-        end: null,
+      const paused = audio.paused;
+      const dur = audio.duration;
+      const start = Date.now() - Math.round(audio.currentTime * 1000);
+      const p = {
+        details: clamp(track),
+        state: clamp(who || album || 'KHInsider'),        // line 2: publisher
+        imageText: who && album ? clamp(album) : undefined, // line 3: game
+        image: cover,
+        url: slug ? `${ORIGIN}/game-soundtracks/album/${slug}` : undefined,
+        paused,
+        start: !paused && isFinite(dur) && dur > 0 ? start : undefined,
+        end: !paused && isFinite(dur) && dur > 0 ? start + Math.round(dur * 1000) : undefined,
       };
 
-      clearTimeout(pauseTimer);
-      if (audio.paused) {
-        pauseTimer = setTimeout(() => invoke('clear_presence'), CLEAR_AFTER_PAUSE_MS);
-      } else {
-        // Discord wants Unix milliseconds; start+end together give the Spotify-style time bar
-        const start = Math.floor(Date.now() - audio.currentTime * 1000);
-        presence.start = start;
-        if (Number.isFinite(audio.duration) && audio.duration > 0) {
-          presence.end = Math.floor(start + audio.duration * 1000);
-        }
-      }
-      invoke('set_presence', { presence });
+      // Skip duplicates (play + playing fire back to back, etc.)
+      const key = JSON.stringify([p.details, p.state, p.imageText, p.image, p.url, p.paused]);
+      const near = (a, b) => (a == null && b == null) || (a != null && b != null && Math.abs(a - b) < 1500);
+      if (last && last.key === key && near(last.start, p.start) && near(last.end, p.end)) return;
+      last = { key, start: p.start, end: p.end };
+      invoke('set_presence', { presence: p });
     }
 
-    const schedule = () => { clearTimeout(timer); timer = setTimeout(push, DEBOUNCE_MS); };
+    function clearPresence() { seq++; last = null; invoke('clear_presence'); }
+    const schedule = () => { clearTimeout(timer); timer = setTimeout(sync, 200); };
 
-    audio.addEventListener('playing', () => { started = true; schedule(); });
-    ['pause', 'seeked', 'durationchange', 'ended'].forEach((e) => audio.addEventListener(e, schedule));
-    if (trackEl) {
-      new MutationObserver(schedule).observe(trackEl, { childList: true, characterData: true, subtree: true });
-    }
+    audio.addEventListener('play', () => { played = true; schedule(); });
+    ['playing', 'pause', 'seeked', 'loadedmetadata', 'durationchange', 'ended'].forEach((e) =>
+      audio.addEventListener(e, schedule));
+    audio.addEventListener('emptied', schedule);
+
+    // Track changes: the site swaps the title text and/or audio.src
+    const title = document.getElementById('audioplayerCurrentSong');
+    if (title) new MutationObserver(schedule).observe(title, { childList: true, characterData: true, subtree: true });
+    new MutationObserver(schedule).observe(audio, { attributes: true, attributeFilter: ['src'] });
+
+    addEventListener('pagehide', clearPresence);
   }
 
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
-  else init();
+  if (document.readyState === 'loading') addEventListener('DOMContentLoaded', start);
+  else start();
 })();

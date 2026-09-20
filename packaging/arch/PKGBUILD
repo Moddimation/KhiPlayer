@@ -1,0 +1,38 @@
+# Maintainer: local build (builds from the project folder, no download)
+pkgname=khinsider-app
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Unofficial khinsider desktop app with Discord Rich Presence"
+arch=('x86_64')
+url="https://downloads.khinsider.com/"
+license=('custom')
+depends=('webkit2gtk-4.1' 'gtk3' 'xdotool')
+makedepends=('rust' 'cargo-tauri' 'base-devel')
+options=('!lto')   # makepkg's LTO flags clash with Rust's own LTO
+
+# This PKGBUILD lives in <project>/packaging/arch/, the project root is two levels up.
+_root="$(realpath "$startdir/../..")"
+
+build() {
+  cd "$_root"
+  cargo tauri build --no-bundle   # optimized release binary
+}
+
+package() {
+  cd "$_root"
+  install -Dm755 src-tauri/target/release/khinsider-app "$pkgdir/usr/bin/khinsider-app"
+
+  install -Dm644 src-tauri/icons/32x32.png  "$pkgdir/usr/share/icons/hicolor/32x32/apps/khinsider-app.png"
+  install -Dm644 src-tauri/icons/128x128.png "$pkgdir/usr/share/icons/hicolor/128x128/apps/khinsider-app.png"
+
+  install -Dm644 /dev/stdin "$pkgdir/usr/share/applications/khinsider-app.desktop" <<DESKTOP
+[Desktop Entry]
+Type=Application
+Name=KHInsider
+Comment=khinsider with Discord Rich Presence
+Exec=khinsider-app
+Icon=khinsider-app
+Categories=AudioVideo;Audio;Player;
+Terminal=false
+DESKTOP
+}
