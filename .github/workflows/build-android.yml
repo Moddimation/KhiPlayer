@@ -24,7 +24,6 @@ jobs:
     env:
       PRESENCE_FEATURE: ${{ matrix.presence == 'token' && 'mobile-presence-token' || 'mobile-presence-oauth' }}
       # Keystore is committed to the repo (hobby project, security not a concern).
-      KEYSTORE_FILE: release.keystore
       KEYSTORE_PASS: khiplayer
       KEY_ALIAS: khiplayer
 
@@ -83,6 +82,14 @@ jobs:
         run: |
           set -euo pipefail
           BT="$ANDROID_HOME/build-tools/${{ env.BUILD_TOOLS_VERSION }}"
+          # Find the committed keystore wherever it lives in the repo.
+          KEYSTORE_FILE="$(find "$GITHUB_WORKSPACE" -type f \( -name '*.keystore' -o -name '*.jks' \) -not -path '*/node_modules/*' | head -n1)"
+          if [ -z "$KEYSTORE_FILE" ]; then
+            echo "::error::No .keystore/.jks file found in the checkout. Files at repo root:"
+            ls -la "$GITHUB_WORKSPACE"
+            exit 1
+          fi
+          echo "Using keystore: $KEYSTORE_FILE"
           mkdir -p dist
           find src-tauri/gen/android -name '*-unsigned.apk' -print0 | while IFS= read -r -d '' apk; do
             base="$(basename "${apk%-unsigned.apk}")"
