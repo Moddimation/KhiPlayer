@@ -36,6 +36,10 @@ jobs:
 
       - name: Set up Android SDK (cmdline-tools + licenses)
         uses: android-actions/setup-android@v3
+        with:
+          # Default is "tools platform-tools"; the legacy "tools" package no longer
+          # exists, so sdkmanager exits 1. We install what we need in the next step.
+          packages: ""
 
       - name: Install SDK platform, build-tools, NDK
         run: |
