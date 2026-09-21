@@ -1,0 +1,109 @@
+name: Build Desktop
+
+on:
+  workflow_dispatch:
+  push:            # no filters = every branch and every tag
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux (.deb, AppImage, .tar.gz)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config curl wget file \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libxdo-dev libssl-dev librsvg2-dev \
+            libfuse2
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: Build .deb and AppImage
+        env:
+          # AppImage bundling shells out to linuxdeploy, which needs FUSE;
+          # GitHub's Ubuntu runners don't have it mounted, so extract-and-run.
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: cargo tauri build --bundles deb,appimage
+
+      - name: Build portable .tar.gz
+        run: |
+          set -euo pipefail
+          VER="$(grep -m1 '^version' src-tauri/Cargo.toml | sed -E 's/.*"(.*)".*/\1/')"
+          STAGE="khinsider-app-${VER}-linux-x86_64"
+          mkdir -p "dist/$STAGE"
+          cp src-tauri/target/release/khinsider-app "dist/$STAGE/"
+          cp README.md "dist/$STAGE/" 2>/dev/null || true
+          cp -r src-tauri/icons "dist/$STAGE/" 2>/dev/null || true
+          tar -C dist -czf "dist/${STAGE}.tar.gz" "$STAGE"
+          rm -rf "dist/$STAGE"
+
+      - name: Collect bundler output
+        run: |
+          mkdir -p dist
+          find src-tauri/target/release/bundle -type f \( -name '*.deb' -o -name '*.AppImage' \) -exec cp {} dist/ \;
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-bundles
+          path: dist/*
+          if-no-files-found: error
+
+  windows:
+    name: Windows (.msi, NSIS .exe, portable .exe)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: Build .msi and NSIS .exe installer
+        # First run downloads WiX3 + NSIS tooling automatically; no extra setup needed.
+        run: cargo tauri build --bundles msi,nsis
+
+      - name: Package portable .exe
+        shell: pwsh
+        run: |
+          $ver = (Select-String -Path src-tauri\Cargo.toml -Pattern '^version\s*=\s*"(.*)"').Matches[0].Groups[1].Value
+          $stage = "khinsider-app-$ver-windows-portable"
+          New-Item -ItemType Directory -Force -Path "dist\$stage" | Out-Null
+          Copy-Item "src-tauri\target\release\khinsider-app.exe" "dist\$stage\"
+          if (Test-Path README.md) { Copy-Item README.md "dist\$stage\" }
+          Compress-Archive -Path "dist\$stage\*" -DestinationPath "dist\$stage.zip"
+          Remove-Item -Recurse -Force "dist\$stage"
+
+      - name: Collect installer output
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Get-ChildItem -Recurse -Path src-tauri\target\release\bundle -Include *.msi,*.exe |
+            Copy-Item -Destination dist\
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-bundles
+          path: dist\*
+          if-no-files-found: error

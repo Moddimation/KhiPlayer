@@ -1,0 +1,129 @@
+<!--
+  Settings > Discord Status (mobile).
+
+  Single screen, two modes, decided at runtime by which backend the build
+  was compiled with (mobile_presence_mode returns "oauth" or "token" --
+  set by the --token build flag, see install-ios.sh / install.sh). This
+  avoids maintaining two frontend bundles for one screen.
+-->
+<div id="presence-login" class="screen">
+  <h2>Discord Status (Mobile)</h2>
+  <div id="oauth-mode" hidden>
+    <p>Show what you're listening to on your Discord profile.</p>
+    <div class="notice-box">
+      <p>Signing in grants KHInsider the <code>sdk.social_layer_presence</code>
+      permission. This app only uses it to post your current track as your
+      Discord activity -- it does not read messages, DMs, or your friends
+      list. That said, the permission itself is broader than that (it's the
+      only self-serve way Discord currently offers for this), so it's worth
+      knowing what you're approving.</p>
+    </div>
+    <button id="login-btn">Sign in with Discord</button>
+    <button id="logout-btn" class="secondary" hidden>Sign out</button>
+    <p id="oauth-status"></p>
+  </div>
+
+  <div id="token-mode" hidden>
+    <div class="warning-box">
+      <p><strong>Read before continuing.</strong></p>
+      <ul>
+        <li>This build uses your Discord account token directly, not a normal login. It was built this way deliberately (--token build flag) rather than through Discord's sanctioned login.</li>
+        <li>Automating your account this way goes against Discord's Terms of Service.</li>
+        <li>The token is as sensitive as your password. It stays in this device's secure storage and is used only to open a status connection to Discord.</li>
+      </ul>
+    </div>
+    <label class="ack">
+      <input type="checkbox" id="ack-risk" />
+      I understand the risk and want to enable this on my account.
+    </label>
+    <input type="password" id="token-input" placeholder="Paste your token" autocomplete="off" autocapitalize="off" spellcheck="false" disabled />
+    <button id="save-token" disabled>Enable status</button>
+    <button id="clear-token" class="secondary">Disable / remove token</button>
+    <p id="token-status"></p>
+  </div>
+</div>
+
+<script type="module">
+  import { invoke } from "@tauri-apps/api/core";
+  import { onOpenUrl } from "@tauri-apps/plugin-deep-link";
+
+  const mode = await invoke("mobile_presence_mode"); // "oauth" | "token"
+
+  if (mode === "oauth") {
+    document.getElementById("oauth-mode").hidden = false;
+    const loginBtn = document.getElementById("login-btn");
+    const logoutBtn = document.getElementById("logout-btn");
+    const statusEl = document.getElementById("oauth-status");
+
+    const refreshUi = async () => {
+      const loggedIn = await invoke("mobile_presence_status");
+      loginBtn.hidden = loggedIn;
+      logoutBtn.hidden = !loggedIn;
+      statusEl.textContent = loggedIn ? "Connected." : "Not signed in.";
+    };
+
+    loginBtn.addEventListener("click", async () => {
+      // Opens the system browser (ASWebAuthenticationSession / Custom
+      // Tabs) at Discord's real login page -- never an in-app webview.
+      await invoke("start_discord_login");
+    });
+
+    logoutBtn.addEventListener("click", async () => {
+      await invoke("stop_mobile_presence");
+      await refreshUi();
+    });
+
+    // Deep-link redirect (khiplayer://oauth-callback?code=...) lands here.
+    onOpenUrl(async (urls) => {
+      const url = new URL(urls[0]);
+      const code = url.searchParams.get("code");
+      if (!code) return;
+      statusEl.textContent = "Finishing sign-in...";
+      try {
+        await invoke("finish_discord_login", { code });
+        await refreshUi();
+      } catch (e) {
+        statusEl.textContent = `Sign-in failed: ${e}`;
+      }
+    });
+
+    await refreshUi();
+  } else {
+    document.getElementById("token-mode").hidden = false;
+    const ack = document.getElementById("ack-risk");
+    const input = document.getElementById("token-input");
+    const saveBtn = document.getElementById("save-token");
+    const clearBtn = document.getElementById("clear-token");
+    const statusEl = document.getElementById("token-status");
+
+    ack.addEventListener("change", () => {
+      input.disabled = !ack.checked;
+      saveBtn.disabled = !ack.checked || input.value.trim().length === 0;
+    });
+    input.addEventListener("input", () => {
+      saveBtn.disabled = !ack.checked || input.value.trim().length === 0;
+    });
+    saveBtn.addEventListener("click", async () => {
+      const token = input.value.trim();
+      input.value = "";
+      saveBtn.disabled = true;
+      statusEl.textContent = "Connecting...";
+      try {
+        await invoke("start_mobile_presence_token", { token });
+        statusEl.textContent = "Connected.";
+      } catch (e) {
+        statusEl.textContent = `Couldn't connect: ${e}`;
+      }
+    });
+    clearBtn.addEventListener("click", async () => {
+      await invoke("stop_mobile_presence");
+      ack.checked = false;
+      input.disabled = true;
+      saveBtn.disabled = true;
+      statusEl.textContent = "Disabled and token removed.";
+    });
+
+    const loggedIn = await invoke("mobile_presence_status");
+    statusEl.textContent = loggedIn ? "Currently connected." : "Not enabled.";
+  }
+</script>
