@@ -23,7 +23,10 @@ jobs:
         presence: [oauth, token]
     env:
       PRESENCE_FEATURE: ${{ matrix.presence == 'token' && 'mobile-presence-token' || 'mobile-presence-oauth' }}
-      HAS_SIGNING: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+      # Keystore is committed to the repo (hobby project, security not a concern).
+      KEYSTORE_FILE: release.keystore
+      KEYSTORE_PASS: khiplayer
+      KEY_ALIAS: khiplayer
 
     steps:
       - uses: actions/checkout@v4
@@ -77,15 +80,8 @@ jobs:
             -- --no-default-features --features "$PRESENCE_FEATURE"
 
       - name: Sign APKs
-        if: env.HAS_SIGNING == 'true'
-        env:
-          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
           BT="$ANDROID_HOME/build-tools/${{ env.BUILD_TOOLS_VERSION }}"
           mkdir -p dist
           find src-tauri/gen/android -name '*-unsigned.apk' -print0 | while IFS= read -r -d '' apk; do
@@ -93,21 +89,15 @@ jobs:
             aligned="$RUNNER_TEMP/${base}-aligned.apk"
             "$BT/zipalign" -f -p 4 "$apk" "$aligned"
             "$BT/apksigner" sign \
-              --ks "$RUNNER_TEMP/release.keystore" \
-              --ks-pass "pass:$ANDROID_KEYSTORE_PASSWORD" \
-              --ks-key-alias "$ANDROID_KEY_ALIAS" \
-              --key-pass "pass:$ANDROID_KEY_PASSWORD" \
+              --ks "$KEYSTORE_FILE" \
+              --ks-pass "pass:$KEYSTORE_PASS" \
+              --ks-key-alias "$KEY_ALIAS" \
+              --key-pass "pass:$KEYSTORE_PASS" \
               --out "dist/khiplayer-${{ matrix.presence }}-${base}.apk" \
               "$aligned"
           done
-          rm -f "$RUNNER_TEMP/release.keystore"
-
-      - name: Collect unsigned APKs (no ANDROID_KEYSTORE_BASE64 secret configured)
-        if: env.HAS_SIGNING != 'true'
-        run: |
-          mkdir -p dist
-          find src-tauri/gen/android -name '*.apk' -exec sh -c 'cp "$1" "dist/khiplayer-${{ matrix.presence }}-$(basename "$1")"' _ {} \;
-          echo "::warning::No signing secrets configured -- these APKs are unsigned and cannot be installed as-is. See README for ANDROID_KEYSTORE_BASE64 setup."
+          ls -la dist
+          [ -n "$(ls dist/*.apk 2>/dev/null)" ] || { echo "::error::No unsigned APKs found to sign"; exit 1; }
 
       - name: Upload APKs
         uses: actions/upload-artifact@v4
