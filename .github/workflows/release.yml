@@ -7,19 +7,41 @@ on:
 
 jobs:
   release:
+    # Only ever fires for pushes (not pull_request builds), and only once the triggering build
+    # actually succeeded.
     if: >
       github.event.workflow_run.conclusion == 'success' &&
-      startsWith(github.event.workflow_run.head_branch, 'v')
+      github.event.workflow_run.event == 'push'
     runs-on: ubuntu-latest
     steps:
-      # Both build workflows fire on the same tag push, but this job only
-      # runs once each completes -- wait for the sibling before publishing,
-      # so a release isn't cut with only half the platforms attached.
+      # v* tag push  -> a real, permanent release (tag_name = the tag itself).
+      # push to main -> a rolling "nightly" prerelease that gets replaced every time.
+      # anything else (other branches) -> skip; no release for those.
+      - name: Decide the release tag
+        id: which
+        run: |
+          branch="${{ github.event.workflow_run.head_branch }}"
+          if [[ "$branch" == v* ]]; then
+            echo "tag=$branch" >> "$GITHUB_OUTPUT"
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          elif [[ "$branch" == "main" ]]; then
+            echo "tag=nightly" >> "$GITHUB_OUTPUT"
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Both build workflows fire on the same push, but this job only runs once each completes --
+      # wait for the sibling before publishing, so a release isn't cut with only half the
+      # platforms attached.
       - name: Wait for the other build workflow
+        if: steps.which.outputs.skip != 'true'
         uses: actions/github-script@v7
         with:
           script: |
-            const tag = context.payload.workflow_run.head_branch;
+            const branch = context.payload.workflow_run.head_branch;
             const names = ["Build Android", "Build Desktop"];
             for (let i = 0; i < 30; i++) {
               const runs = await Promise.all(names.map(name =>
@@ -27,7 +49,7 @@ jobs:
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   workflow_id: `${name.toLowerCase().replace(" ", "-")}.yml`,
-                  branch: tag,
+                  branch,
                 }).then(r => r.data.workflow_runs[0])
               ));
               if (runs.every(r => r && r.status === "completed")) {
@@ -39,6 +61,7 @@ jobs:
             core.setFailed("Timed out waiting for the sibling build workflow.");
 
       - name: Download all artifacts
+        if: steps.which.outputs.skip != 'true'
         uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -47,21 +70,22 @@ jobs:
           pattern: "*"
 
       - name: Also grab the sibling workflow's artifacts
+        if: steps.which.outputs.skip != 'true'
+        id: sibling
         uses: actions/github-script@v7
         with:
           script: |
-            const tag = context.payload.workflow_run.head_branch;
+            const branch = context.payload.workflow_run.head_branch;
             const other = context.payload.workflow_run.name === "Build Android" ? "Build Desktop" : "Build Android";
             const runs = await github.rest.actions.listWorkflowRunsForRepo({
               owner: context.repo.owner, repo: context.repo.repo,
-              branch: tag, event: "push",
+              branch, event: "push",
             });
-            const run = runs.data.workflow_runs.find(r => r.name === other && r.head_branch === tag);
+            const run = runs.data.workflow_runs.find(r => r.name === other && r.head_branch === branch);
             core.setOutput("run_id", run ? run.id : "");
-          id: sibling
 
       - name: Download sibling artifacts
-        if: steps.sibling.outputs.run_id != ''
+        if: steps.which.outputs.skip != 'true' && steps.sibling.outputs.run_id != ''
         uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -70,15 +94,21 @@ jobs:
           pattern: "*"
 
       - name: Flatten
+        if: steps.which.outputs.skip != 'true'
         run: |
           mkdir -p release
           find artifacts -type f -exec cp {} release/ \;
           ls -la release
 
       - name: Publish release
+        if: steps.which.outputs.skip != 'true'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.workflow_run.head_branch }}
+          tag_name: ${{ steps.which.outputs.tag }}
+          target_commitish: ${{ github.event.workflow_run.head_sha }}
+          prerelease: ${{ steps.which.outputs.prerelease }}
+          name: ${{ steps.which.outputs.tag == 'nightly' && format('Nightly ({0})', github.event.workflow_run.head_sha) || steps.which.outputs.tag }}
+          body: ${{ steps.which.outputs.tag == 'nightly' && 'Automatisch aus dem aktuellen main-Branch gebaut. Kann jederzeit kaputt sein.' || '' }}
           files: release/*
           fail_on_unmatched_files: true
-          generate_release_notes: true
+          generate_release_notes: ${{ steps.which.outputs.prerelease != 'true' }}
