@@ -19,6 +19,51 @@
   const invoke = (cmd, args) => {
     try { return window.__TAURI__.core.invoke(cmd, args).catch(() => {}); } catch (_) {}
   };
+
+  // ---- Mobile: auto-prompt a Discord login the first time we see audio play with no ----
+  // ---- session connected, and keep the lockscreen/notification media session in sync. ----
+  let discordPromptedOnce = false;
+  let lastMediaSync = 0;
+  function maybeConnectDiscord(paused) {
+    if (paused || discordPromptedOnce) return;
+    discordPromptedOnce = true;
+    invoke('discord_connected').then((connected) => {
+      // discord_connected only exists on mobile; on desktop invoke() above swallows the
+      // "command not found" and resolves to undefined, so this stays a no-op there.
+      if (connected === false) invoke('connect_discord');
+    });
+  }
+  function syncMediaSession(audio, track, who, cover) {
+    const now = Date.now();
+    if (now - lastMediaSync < 800) return; // updateTimeline-worthy changes only, not every tick
+    lastMediaSync = now;
+    // plugin:<name>|<command> is Tauri v2's invoke naming for plugin commands; harmless no-op
+    // on desktop (no such plugin registered there) and if the exact command name ever drifts
+    // from the tauri-plugin-media-session version in Cargo.toml -- check `cargo doc` for that
+    // crate if lockscreen art/controls stop updating after a crate bump.
+    invoke('plugin:media-session|update_state', {
+      title: track,
+      artist: who || undefined,
+      artworkUrl: cover,
+      duration: isFinite(audio.duration) ? audio.duration : undefined,
+      position: audio.currentTime,
+      isPlaying: !audio.paused,
+      canPrev: true,
+      canNext: true,
+    });
+  }
+  function clearMediaSession() { invoke('plugin:media-session|clear'); }
+
+  // ---- Manual reload: Ctrl+R / Cmd+R (Bluetooth keyboards), and pull-down-to-refresh. ----
+  // The Android WebView doesn't have a native swipe-refresh gesture on its own (that's usually
+  // added natively via SwipeRefreshLayout -- see android-overlay/MainActivity.kt), but this
+  // covers external keyboards and desktop/browser testing for free.
+  addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'r') {
+      e.preventDefault();
+      location.reload();
+    }
+  }, true);
   const clamp = (s) => {
     s = String(s ?? '').replace(/\s+/g, ' ').trim().slice(0, 128);
     return s.length === 1 ? s + '\u200b' : s; // Discord requires >= 2 chars
@@ -123,12 +168,16 @@
       // Skip duplicates (play + playing fire back to back, etc.)
       const key = JSON.stringify([p.details, p.state, p.imageText, p.image, p.url, p.paused]);
       const near = (a, b) => (a == null && b == null) || (a != null && b != null && Math.abs(a - b) < 1500);
-      if (last && last.key === key && near(last.start, p.start) && near(last.end, p.end)) return;
-      last = { key, start: p.start, end: p.end };
-      invoke('set_presence', { presence: p });
+      const isDup = last && last.key === key && near(last.start, p.start) && near(last.end, p.end);
+      if (!isDup) {
+        last = { key, start: p.start, end: p.end };
+        invoke('set_presence', { presence: p });
+      }
+      maybeConnectDiscord(paused);
+      syncMediaSession(audio, track, who, cover);
     }
 
-    function clearPresence() { seq++; last = null; invoke('clear_presence'); }
+    function clearPresence() { seq++; last = null; invoke('clear_presence'); clearMediaSession(); }
     const schedule = () => { clearTimeout(timer); timer = setTimeout(sync, 200); };
 
     audio.addEventListener('play', () => { played = true; schedule(); });

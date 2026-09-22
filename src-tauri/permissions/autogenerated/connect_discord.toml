@@ -1,0 +1,12 @@
+# Automatically generated - DO NOT EDIT!
+# (Written by hand this once to match what `cargo build` will regenerate; safe to overwrite.)
+
+[[permission]]
+identifier = "allow-connect-discord"
+description = "Enables the connect_discord command without any pre-configured scope."
+commands.allow = ["connect_discord"]
+
+[[permission]]
+identifier = "deny-connect-discord"
+description = "Denies the connect_discord command without any pre-configured scope."
+commands.deny = ["connect_discord"]

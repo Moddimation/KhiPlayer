@@ -71,6 +71,11 @@ jobs:
       - name: Generate Android project
         run: cargo tauri android init --ci
 
+      - name: Patch native Android sources
+        run: |
+          chmod +x scripts/patch-android.sh
+          ./scripts/patch-android.sh
+
       - name: Build release APKs (aarch64, armv7, i686, x86_64)
         run: |
           cargo tauri android build --apk \

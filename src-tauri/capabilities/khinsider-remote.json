@@ -1,8 +1,16 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "khinsider-remote",
-  "description": "Lets the khinsider site call only the two presence commands.",
+  "description": "Lets the khinsider site call the presence commands, and (mobile) start/check the Discord login.",
   "windows": ["main"],
   "remote": { "urls": ["https://downloads.khinsider.com/*"] },
-  "permissions": ["allow-set-presence", "allow-clear-presence"]
+  "permissions": [
+    "allow-set-presence",
+    "allow-clear-presence",
+    "allow-connect-discord",
+    "allow-discord-connected",
+    "opener:default",
+    "deep-link:default",
+    "media-session:default"
+  ]
 }
