@@ -1,0 +1,12 @@
+# Automatically generated - DO NOT EDIT!
+# (Written by hand this once to match what `cargo build` will regenerate; safe to overwrite.)
+
+[[permission]]
+identifier = "allow-report-playback"
+description = "Enables the report_playback command without any pre-configured scope."
+commands.allow = ["report_playback"]
+
+[[permission]]
+identifier = "deny-report-playback"
+description = "Denies the report_playback command without any pre-configured scope."
+commands.deny = ["report_playback"]

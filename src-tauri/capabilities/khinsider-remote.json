@@ -9,6 +9,10 @@
     "allow-clear-presence",
     "allow-connect-discord",
     "allow-discord-connected",
+    "allow-report-playback",
+    "allow-report-now-playing-meta",
+    "allow-get-now-playing",
+    "allow-player-control",
     "opener:default",
     "deep-link:default",
     "media-session:default"

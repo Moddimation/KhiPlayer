@@ -9,6 +9,10 @@ fn main() {
                 "clear_presence",
                 "connect_discord",
                 "discord_connected",
+                "report_playback",
+                "report_now_playing_meta",
+                "get_now_playing",
+                "player_control",
             ]),
         ),
     )

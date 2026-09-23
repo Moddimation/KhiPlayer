@@ -10,6 +10,96 @@ const DISCORD_APP_ID: &str = "1551290011939512440";
 
 mod oauth_presence;
 
+// ---------------------------------------------------------------------------------------------
+// Keepalive: playback survives navigating to a different page (and, on desktop, the mini
+// player). Design, so this doesn't turn into a second audio engine to maintain:
+//
+//   - The VISIBLE page's own <audio id="audio1"> stays the one and only thing making sound
+//     while that page is open -- nothing about that changes, no muting, no double audio.
+//   - A hidden, never-navigating "player" window holds a second <audio> that does nothing
+//     *unless* handed a track. On `pagehide`, if the page was mid-playback, inject.js sends one
+//     `report_playback` with the exact src/position/volume -- the hidden player picks up
+//     exactly where the visible page left off, right as that page's own audio is destroyed by
+//     the navigation. If the *new* page never plays anything, the handoff just keeps going
+///    ("song keeps playing"). If the new page *does* start something, its own next `sync()`
+//     overwrites the hidden player via the same command ("new song wins", automatically).
+//   - `player_control` (from the mini player, or the mobile lockscreen via media-session) is
+//     broadcast to *both* the main window and the hidden player. Only one of the two is ever
+//     actually audible at a time, so applying it to both is harmless -- whichever one isn't
+//     making sound just updates its paused/currentTime for free, and the one that matters
+//     responds. next/prev only make sense with a visible page open (see inject.js).
+//   - `report_now_playing_meta` is a separate, display-only event so the mini player can show
+//     title/artist/art live while the visible page is the one actually playing, without that
+//     touching the hidden player's audio at all.
+// ---------------------------------------------------------------------------------------------
+
+#[derive(Deserialize, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaybackHandoff {
+    src: String,
+    position: f64,
+    volume: f64,
+}
+
+/// What the in-page overlay shows. Kept server-side (`NowPlayingState`) so a freshly loaded page
+/// -- with nothing of its own playing yet -- can immediately show what's still playing in the
+/// background instead of a blank overlay until something happens locally.
+#[derive(Deserialize, Clone, serde::Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct NowPlayingMeta {
+    title: String,
+    artist: Option<String>,
+    artwork: Option<String>,
+    paused: bool,
+}
+
+#[derive(Default)]
+struct NowPlayingState(std::sync::Mutex<Option<NowPlayingMeta>>);
+
+#[tauri::command]
+fn report_playback(app: tauri::AppHandle, info: PlaybackHandoff) {
+    if let Some(player) = app.get_webview_window("player") {
+        let _ = player.emit("mirror-playback", info);
+    }
+}
+
+#[tauri::command]
+fn report_now_playing_meta(app: tauri::AppHandle, state: tauri::State<NowPlayingState>, meta: NowPlayingMeta) {
+    *state.0.lock().unwrap() = Some(meta.clone());
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.emit("now-playing-meta", meta);
+    }
+}
+
+/// Lets a just-loaded page's overlay backfill immediately, instead of waiting for the next
+/// `report_now_playing_meta` push (which won't come at all if nothing plays on the new page).
+#[tauri::command]
+fn get_now_playing(state: tauri::State<NowPlayingState>) -> Option<NowPlayingMeta> {
+    state.0.lock().unwrap().clone()
+}
+
+/// Only used for the mobile lockscreen (media-session onAction) reaching into whichever webview
+/// is actually playing right now. The in-page overlay itself talks to its own page's <audio>
+/// directly and doesn't need this -- see inject.js.
+///
+/// action: "playPause" | "seek" (value = seconds) | "volume" (value = 0..1) | "next" | "prev"
+#[tauri::command]
+fn player_control(app: tauri::AppHandle, action: String, value: Option<f64>) {
+    #[derive(Clone, serde::Serialize)]
+    struct Ctl {
+        action: String,
+        value: Option<f64>,
+    }
+    let payload = Ctl { action, value };
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.emit("player-control", payload.clone());
+    }
+    if let Some(player) = app.get_webview_window("player") {
+        let _ = player.emit("player-control", payload);
+    }
+}
+
+
 // On mobile there is no Discord IPC, so these fields are read by oauth_presence instead.
 #[derive(Deserialize, Clone)]
 #[cfg_attr(not(desktop), allow(dead_code))]
@@ -149,7 +239,7 @@ fn discord_connected(state: tauri::State<rpc::State>) -> bool {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let mut builder = tauri::Builder::default();
+    let mut builder = tauri::Builder::default().manage(NowPlayingState::default());
 
     #[cfg(desktop)]
     {
@@ -170,6 +260,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             set_presence,
             clear_presence,
+            report_playback,
+            report_now_playing_meta,
+            get_now_playing,
+            player_control,
             #[cfg(not(desktop))]
             connect_discord,
             #[cfg(not(desktop))]
@@ -208,6 +302,16 @@ pub fn run() {
                 .inner_size(1100.0, 800.0)
                 .initialization_script(include_str!("../inject.js"))
                 .build()?;
+
+            // Hidden, never-navigating window: just hosts <audio id="a"> (src/player.html) so a
+            // track can keep playing after the visible page above navigates away. See the big
+            // comment near report_playback/player_control for the handoff design.
+            WebviewWindowBuilder::new(app, "player", WebviewUrl::App("player.html".into()))
+                .visible(false)
+                .skip_taskbar(true)
+                .inner_size(1.0, 1.0)
+                .build()?;
+
             Ok(())
         })
         .run(tauri::generate_context!())

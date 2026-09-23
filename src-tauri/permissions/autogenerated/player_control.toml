@@ -1,0 +1,12 @@
+# Automatically generated - DO NOT EDIT!
+# (Written by hand this once to match what `cargo build` will regenerate; safe to overwrite.)
+
+[[permission]]
+identifier = "allow-player-control"
+description = "Enables the player_control command without any pre-configured scope."
+commands.allow = ["player_control"]
+
+[[permission]]
+identifier = "deny-player-control"
+description = "Denies the player_control command without any pre-configured scope."
+commands.deny = ["player_control"]

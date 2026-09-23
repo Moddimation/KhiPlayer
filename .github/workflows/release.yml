@@ -14,8 +14,8 @@ jobs:
       github.event.workflow_run.event == 'push'
     runs-on: ubuntu-latest
     steps:
-      # v* tag push  -> a real, permanent release (tag_name = the tag itself).
-      # push to main -> a rolling "nightly" prerelease that gets replaced every time.
+      # v* tag push    -> a real, permanent release (tag_name = the tag itself).
+      # push to master -> a rolling "nightly" prerelease that gets replaced every time.
       # anything else (other branches) -> skip; no release for those.
       - name: Decide the release tag
         id: which
@@ -25,7 +25,7 @@ jobs:
             echo "tag=$branch" >> "$GITHUB_OUTPUT"
             echo "prerelease=false" >> "$GITHUB_OUTPUT"
             echo "skip=false" >> "$GITHUB_OUTPUT"
-          elif [[ "$branch" == "main" ]]; then
+          elif [[ "$branch" == "master" ]]; then
             echo "tag=nightly" >> "$GITHUB_OUTPUT"
             echo "prerelease=true" >> "$GITHUB_OUTPUT"
             echo "skip=false" >> "$GITHUB_OUTPUT"

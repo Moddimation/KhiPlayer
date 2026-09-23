@@ -1,0 +1,12 @@
+# Automatically generated - DO NOT EDIT!
+# (Written by hand this once to match what `cargo build` will regenerate; safe to overwrite.)
+
+[[permission]]
+identifier = "allow-report-now-playing-meta"
+description = "Enables the report_now_playing_meta command without any pre-configured scope."
+commands.allow = ["report_now_playing_meta"]
+
+[[permission]]
+identifier = "deny-report-now-playing-meta"
+description = "Denies the report_now_playing_meta command without any pre-configured scope."
+commands.deny = ["report_now_playing_meta"]

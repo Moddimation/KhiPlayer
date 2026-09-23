@@ -1,0 +1,12 @@
+# Automatically generated - DO NOT EDIT!
+# (Written by hand this once to match what `cargo build` will regenerate; safe to overwrite.)
+
+[[permission]]
+identifier = "allow-get-now-playing"
+description = "Enables the get_now_playing command without any pre-configured scope."
+commands.allow = ["get_now_playing"]
+
+[[permission]]
+identifier = "deny-get-now-playing"
+description = "Denies the get_now_playing command without any pre-configured scope."
+commands.deny = ["get_now_playing"]

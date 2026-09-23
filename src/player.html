@@ -1,0 +1,32 @@
+<!doctype html>
+<html>
+<body style="margin:0;background:transparent">
+<audio id="a" preload="auto"></audio>
+<script>
+  // This window is never shown and never navigates -- see the comment above
+  // report_playback/player_control in lib.rs for why that's the whole point.
+  const a = document.getElementById('a');
+
+  window.__TAURI__.event.listen('mirror-playback', (e) => {
+    const { src, position, volume } = e.payload;
+    if (src && a.src !== src) a.src = src;
+    if (typeof volume === 'number') a.volume = volume;
+    if (typeof position === 'number') {
+      const setPos = () => { a.currentTime = position; };
+      if (a.readyState >= 1) setPos();
+      else a.addEventListener('loadedmetadata', setPos, { once: true });
+    }
+    a.play().catch(() => {}); // handoff always means "was playing", so just play
+  });
+
+  window.__TAURI__.event.listen('player-control', (e) => {
+    const { action, value } = e.payload;
+    if (action === 'playPause') { a.paused ? a.play().catch(() => {}) : a.pause(); }
+    else if (action === 'seek' && typeof value === 'number') a.currentTime = value;
+    else if (action === 'volume' && typeof value === 'number') a.volume = value;
+    // 'next' / 'prev' only make sense with the real site's playlist open in the main window;
+    // see inject.js's player-control listener.
+  });
+</script>
+</body>
+</html>

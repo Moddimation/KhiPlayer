@@ -54,6 +54,118 @@
   }
   function clearMediaSession() { invoke('plugin:media-session|clear'); }
 
+  // ---- In-page "now playing" overlay (bottom-right, translucent). Lives in a shadow root so ----
+  // ---- none of the site's CSS can touch it and none of ours leaks onto the site. ----
+  function buildOverlay() {
+    const host = document.createElement('div');
+    host.id = 'khi-overlay-host';
+    Object.assign(host.style, { position: 'fixed', inset: 'auto 16px 16px auto', zIndex: 2147483647 });
+    const root = host.attachShadow({ mode: 'closed' });
+    root.innerHTML = `
+      <style>
+        .card { display:flex; align-items:center; gap:10px; width:280px; padding:10px 12px;
+          background:rgba(24,24,28,.72); backdrop-filter:blur(10px); border:1px solid rgba(255,255,255,.08);
+          border-radius:14px; box-shadow:0 6px 24px rgba(0,0,0,.35); color:#eee;
+          font:12px/1.35 -apple-system,Segoe UI,Roboto,sans-serif; transition:opacity .15s; }
+        .card.collapsed .body { display:none; }
+        img.art { width:40px; height:40px; border-radius:8px; object-fit:cover; background:#333; flex:none; }
+        .meta { flex:1; min-width:0; }
+        .title { font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .artist { opacity:.65; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .row { display:flex; align-items:center; gap:6px; margin-top:2px; }
+        button { background:none; border:none; color:#eee; opacity:.85; cursor:pointer; padding:2px;
+          font-size:15px; line-height:1; }
+        button:hover { opacity:1; }
+        input[type=range] { flex:1; height:3px; accent-color:#eee; }
+        .toggle { position:absolute; top:-8px; right:-8px; width:18px; height:18px; border-radius:50%;
+          background:rgba(24,24,28,.85); font-size:11px; display:flex; align-items:center; justify-content:center; }
+      </style>
+      <div class="card" style="position:relative">
+        <button class="toggle" title="Ein-/ausblenden">-</button>
+        <img class="art" />
+        <div class="body meta">
+          <div class="title">Nothing playing</div>
+          <div class="artist"></div>
+          <div class="row">
+            <button class="prev" title="Zurück">⏮</button>
+            <button class="play" title="Play/Pause">▶</button>
+            <button class="next" title="Weiter">⏭</button>
+            <input class="seek" type="range" min="0" max="1000" value="0" />
+          </div>
+        </div>
+      </div>`;
+    document.documentElement.appendChild(host);
+
+    const $ = (s) => root.querySelector(s);
+    const card = $('.card');
+    $('.toggle').onclick = () => card.classList.toggle('collapsed');
+
+    let seeking = false;
+    $('.seek').addEventListener('input', (e) => { seeking = true; });
+    $('.seek').addEventListener('change', (e) => {
+      seeking = false;
+      const frac = Number(e.target.value) / 1000;
+      overlayControl('seek', frac * (localAudioIsSource() ? (audio.duration || 0) : 0));
+    });
+    $('.play').onclick = () => overlayControl('playPause');
+    $('.prev').onclick = () => overlayControl('prev');
+    $('.next').onclick = () => overlayControl('next');
+
+    return {
+      setMeta(m) {
+        $('.title').textContent = m.title || 'Nothing playing';
+        $('.artist').textContent = m.artist || '';
+        $('.art').src = m.artwork || '';
+        $('.play').textContent = m.paused ? '▶' : '⏸';
+      },
+      setProgress(frac) { if (!seeking) $('.seek').value = String(Math.round((frac || 0) * 1000)); },
+    };
+  }
+  const overlay = buildOverlay();
+
+  // `played` (declared in start()) tells us whether THIS page's own <audio> is the thing making
+  // sound right now. If it isn't (fresh page, nothing clicked yet -- but something is still
+  // playing in the background from a page we navigated away from), route controls to that
+  // background player instead of a local <audio> that has nothing loaded into it.
+  function localAudioIsSource() { return typeof played !== 'undefined' && played; }
+  function overlayControl(action, value) {
+    if (localAudioIsSource()) {
+      if (action === 'playPause') { audio.paused ? audio.play().catch(() => {}) : audio.pause(); }
+      else if (action === 'seek') audio.currentTime = value;
+      else if (action === 'next' || action === 'prev') clickSiteButton(action);
+      // volume isn't exposed in the overlay UI (kept simple); wire a slider in later if wanted.
+    } else {
+      invoke('player_control', { action, value });
+    }
+  }
+  // Best-effort guess at the site's own prev/next buttons -- inspect the real page and adjust
+  // this selector list if it doesn't find them (Discord presence/audio reading doesn't depend on
+  // this at all, so getting it wrong only means the overlay's prev/next buttons do nothing).
+  function clickSiteButton(which) {
+    const patterns = which === 'next'
+      ? ['#audioplayerNext', '.audioplayerNext', '[onclick*="ext" i]', '[title*="ext" i]', '[aria-label*="ext" i]']
+      : ['#audioplayerPrevious', '.audioplayerPrevious', '[onclick*="rev" i]', '[title*="rev" i]', '[aria-label*="rev" i]'];
+    for (const sel of patterns) {
+      const el = document.querySelector(sel);
+      if (el) { el.click(); return; }
+    }
+  }
+
+  // Backfill immediately on load (covers "opened a page where nothing plays, but something is
+  // still going from before"), then stay live for as long as this page is open.
+  invoke('get_now_playing').then((m) => { if (m) overlay.setMeta(m); });
+  window.__TAURI__.event.listen('now-playing-meta', (e) => { if (!localAudioIsSource()) overlay.setMeta(e.payload); });
+  // Mobile lockscreen buttons land here too (see player_control in lib.rs); only meaningful
+  // while this page's own audio is the active source.
+  window.__TAURI__.event.listen('player-control', (e) => {
+    if (!localAudioIsSource()) return;
+    const { action, value } = e.payload;
+    if (action === 'playPause') { audio.paused ? audio.play().catch(() => {}) : audio.pause(); }
+    else if (action === 'seek' && typeof value === 'number') audio.currentTime = value;
+    else if (action === 'volume' && typeof value === 'number') audio.volume = value;
+    else if (action === 'next' || action === 'prev') clickSiteButton(action);
+  });
+
   // ---- Manual reload: Ctrl+R / Cmd+R (Bluetooth keyboards), and pull-down-to-refresh. ----
   // The Android WebView doesn't have a native swipe-refresh gesture on its own (that's usually
   // added natively via SwipeRefreshLayout -- see android-overlay/MainActivity.kt), but this
@@ -175,6 +287,11 @@
       }
       maybeConnectDiscord(paused);
       syncMediaSession(audio, track, who, cover);
+
+      // Overlay: instant local update, plus tell Rust so the *next* page's overlay (and, on
+      // mobile, the lockscreen) can show this too.
+      overlay.setMeta({ title: track, artist: who, artwork: cover, paused });
+      invoke('report_now_playing_meta', { meta: { title: track, artist: who, artwork: cover, paused } });
     }
 
     function clearPresence() { seq++; last = null; invoke('clear_presence'); clearMediaSession(); }
@@ -184,13 +301,27 @@
     ['playing', 'pause', 'seeked', 'loadedmetadata', 'durationchange', 'ended'].forEach((e) =>
       audio.addEventListener(e, schedule));
     audio.addEventListener('emptied', schedule);
+    audio.addEventListener('timeupdate', () => {
+      if (isFinite(audio.duration) && audio.duration > 0) overlay.setProgress(audio.currentTime / audio.duration);
+    });
 
     // Track changes: the site swaps the title text and/or audio.src
     const title = document.getElementById('audioplayerCurrentSong');
     if (title) new MutationObserver(schedule).observe(title, { childList: true, characterData: true, subtree: true });
     new MutationObserver(schedule).observe(audio, { attributes: true, attributeFilter: ['src'] });
 
-    addEventListener('pagehide', clearPresence);
+    // Keepalive handoff: this page is about to be destroyed by navigation. If it was mid-playback,
+    // hand the exact position off to the hidden background player so the song keeps going on
+    // whatever page loads next -- see the big comment above report_playback/player_control in
+    // lib.rs. If the next page starts something of its own, that page's own sync() overwrites
+    // this via the same command, so "a new song wins" falls out for free.
+    addEventListener('pagehide', () => {
+      const src = audio.currentSrc || audio.src;
+      if (!audio.paused && !audio.ended && src) {
+        invoke('report_playback', { info: { src, position: audio.currentTime, volume: audio.volume } });
+      }
+      clearPresence();
+    });
   }
 
   if (document.readyState === 'loading') addEventListener('DOMContentLoaded', start);
