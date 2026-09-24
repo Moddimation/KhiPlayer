@@ -1,5 +1,5 @@
 use serde::Deserialize;
-use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 const START_URL: &str = "https://downloads.khinsider.com/";
 // Create an application at https://discord.com/developers/applications and paste its Application ID here.
@@ -308,7 +308,6 @@ pub fn run() {
             // comment near report_playback/player_control for the handoff design.
             WebviewWindowBuilder::new(app, "player", WebviewUrl::App("player.html".into()))
                 .visible(false)
-                .skip_taskbar(true)
                 .inner_size(1.0, 1.0)
                 .build()?;
 
