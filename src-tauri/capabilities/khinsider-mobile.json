@@ -1,0 +1,15 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "khinsider-mobile",
+  "description": "Mobile-only: Discord login (system browser + deep link) and the background-audio media session. Split out from khinsider-remote.json because tauri-plugin-opener/deep-link/media-session are mobile-only Cargo dependencies -- their permissions don't exist on a desktop build, so referencing them outside a mobile-scoped capability breaks `cargo build` there.",
+  "platforms": ["android", "iOS"],
+  "windows": ["main"],
+  "remote": { "urls": ["https://downloads.khinsider.com/*"] },
+  "permissions": [
+    "allow-connect-discord",
+    "allow-discord-connected",
+    "opener:default",
+    "deep-link:default",
+    "media-session:default"
+  ]
+}

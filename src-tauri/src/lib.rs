@@ -8,6 +8,7 @@ const START_URL: &str = "https://downloads.khinsider.com/";
 // discord-1551290011939512440:/authorize/callback must be an allowed OAuth2 redirect.
 const DISCORD_APP_ID: &str = "1551290011939512440";
 
+#[cfg(not(desktop))]
 mod oauth_presence;
 
 // ---------------------------------------------------------------------------------------------

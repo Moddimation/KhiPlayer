@@ -1,10 +1,10 @@
 package dev.local.khinsider
 
 import android.view.KeyEvent
+import android.view.View
 import android.view.ViewGroup
 import android.webkit.WebView
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
-import app.tauri.plugin.PluginManager
 
 // Swatinem/rust-cache and `cargo tauri android init` regenerate everything else in this folder
 // from scratch, but leave an existing MainActivity.kt alone if one is already there -- which is
@@ -16,56 +16,52 @@ import app.tauri.plugin.PluginManager
 //   2. Ctrl+R on a physical/Bluetooth keyboard also reloads (inject.js already handles this via
 //      a JS keydown listener, but that only fires once the page has finished loading -- this
 //      covers it before/while that isn't true, e.g. if the page is stuck loading).
+//
+// IMPORTANT: TauriActivity attaches the WebView itself by calling `setContentView(webView)`
+// *after* `onWebViewCreate` returns. An earlier version of this file tried to reparent the
+// WebView into a SwipeRefreshLayout from inside onWebViewCreate -- that raced Tauri's own attach
+// and crashed with "The specified child already has a parent." The fix is to intercept
+// setContentView itself and wrap whatever it's given, instead of fighting the base class over
+// who attaches the WebView.
 class MainActivity : TauriActivity() {
     private lateinit var webView: WebView
 
     override fun onWebViewCreate(webView: WebView) {
         super.onWebViewCreate(webView)
         this.webView = webView
+    }
 
-        // The WebView is already attached to the activity's content view by this point; pull it
-        // out and re-host it inside a SwipeRefreshLayout instead.
-        val parent = webView.parent as? ViewGroup
-        val index = parent?.indexOfChild(webView) ?: -1
-        val originalLayoutParams = webView.layoutParams
-        parent?.removeView(webView)
+    override fun setContentView(view: View) {
+        if (view !== webView) {
+            super.setContentView(view)
+            return
+        }
 
         val swipeRefresh = SwipeRefreshLayout(this).apply {
             addView(
-                webView,
+                view,
                 ViewGroup.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT,
                 ),
             )
-            setOnRefreshListener {
-                webView.reload()
-            }
+            setOnRefreshListener { webView.reload() }
         }
 
-        if (parent != null && index >= 0) {
-            parent.addView(swipeRefresh, index, originalLayoutParams)
-        } else {
-            // Fallback: no known parent (shouldn't normally happen) -- just make it the activity's
-            // content view outright.
-            setContentView(swipeRefresh)
-        }
-
-        // Android only calls WebView.onScrollChanged for the swipe indicator's own drag detection
-        // once it knows whether the page is scrolled to the top; wire that up explicitly.
+        // Only let the user pull-to-refresh when already scrolled to the top -- otherwise a
+        // swipe-down mid-page would fight normal scrolling.
         webView.viewTreeObserver.addOnScrollChangedListener {
             swipeRefresh.isEnabled = webView.scrollY == 0
         }
-
-        // Stop the spinner once the page (or an audio-driven re-render) has actually reloaded.
         stopRefreshingOnLoad(swipeRefresh, webView)
+
+        super.setContentView(swipeRefresh)
     }
 
     private fun stopRefreshingOnLoad(swipeRefresh: SwipeRefreshLayout, webView: WebView) {
-        // Tauri installs its own WebViewClient (RustWebViewClient) to serve the custom-protocol
-        // asset scheme and to wire up navigation events; we don't want to replace it (that would
-        // break the app), just piggyback on page-finished via a lightweight poll instead of
-        // fighting over WebViewClient ownership.
+        // Tauri installs its own WebViewClient (for the custom-protocol asset scheme and
+        // navigation events); we don't want to replace it, just piggyback on page-finished via a
+        // lightweight poll instead of fighting over WebViewClient ownership.
         val handler = android.os.Handler(mainLooper)
         val stopWhenIdle = object : Runnable {
             override fun run() {
