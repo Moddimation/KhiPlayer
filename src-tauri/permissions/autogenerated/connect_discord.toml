@@ -1,5 +1,4 @@
 # Automatically generated - DO NOT EDIT!
-# (Written by hand this once to match what `cargo build` will regenerate; safe to overwrite.)
 
 [[permission]]
 identifier = "allow-connect-discord"

@@ -57,10 +57,162 @@ pub struct NowPlayingMeta {
 #[derive(Default)]
 struct NowPlayingState(std::sync::Mutex<Option<NowPlayingMeta>>);
 
+// ---------------------------------------------------------------------------------------------
+// Background audio, desktop: plain native playback via rodio, on its own thread. Deliberately
+// NOT a hidden webview with an <audio> tag (which is what this used to be) -- a webview nobody
+// ever clicks in gets its audio autoplay blocked by browser security policy, differently broken
+// on every OS (WebView2, WebKitGTK, WKWebView each need their own workaround, and macOS doesn't
+// have a clean one at all through Tauri's API). Native playback has no such restriction: it was
+// never a browser security boundary to begin with, so there's nothing to route around.
+// ---------------------------------------------------------------------------------------------
+#[cfg(desktop)]
+mod background_audio {
+    use std::io::Cursor;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc::{channel, Sender};
+
+    enum Cmd {
+        Play { url: String, volume: f32, position: f64 },
+        Pause,
+        Resume,
+        Volume(f32),
+        Stop,
+    }
+
+    pub struct BackgroundAudio {
+        tx: Sender<Cmd>,
+        paused: AtomicBool,
+    }
+
+    impl BackgroundAudio {
+        /// Spawns the audio thread and returns immediately. `rodio::OutputStream` isn't `Send`
+        /// on every platform, so it lives entirely inside that one thread; everything else talks
+        /// to it over a channel instead of touching it directly.
+        pub fn spawn() -> Self {
+            let (tx, rx) = channel::<Cmd>();
+            std::thread::spawn(move || {
+                let (_stream, handle) = match rodio::OutputStream::try_default() {
+                    Ok(v) => v,
+                    Err(e) => {
+                        eprintln!("[background-audio] no output device: {e}");
+                        return;
+                    }
+                };
+                let mut sink: Option<rodio::Sink> = None;
+                for cmd in rx {
+                    match cmd {
+                        Cmd::Play { url, volume, position } => {
+                            let fetched = reqwest::blocking::get(&url).and_then(|r| r.bytes());
+                            match fetched {
+                                Ok(bytes) => match rodio::Decoder::new(Cursor::new(bytes)) {
+                                    Ok(source) => match rodio::Sink::try_new(&handle) {
+                                        Ok(s) => {
+                                            s.set_volume(volume);
+                                            // Resumes at the same part the visible page was at
+                                            // when it navigated away. This decodes-and-discards
+                                            // up to `position`, so a very long skip briefly
+                                            // delays playback starting -- fine for a normal
+                                            // "picked up mid-song" handoff.
+                                            if position > 0.0 {
+                                                use rodio::Source;
+                                                s.append(source.skip_duration(std::time::Duration::from_secs_f64(position)));
+                                            } else {
+                                                s.append(source);
+                                            }
+                                            sink = Some(s);
+                                        }
+                                        Err(e) => eprintln!("[background-audio] sink: {e}"),
+                                    },
+                                    Err(e) => eprintln!("[background-audio] decode: {e}"),
+                                },
+                                Err(e) => eprintln!("[background-audio] fetch: {e}"),
+                            }
+                        }
+                        Cmd::Pause => {
+                            if let Some(s) = &sink {
+                                s.pause();
+                            }
+                        }
+                        Cmd::Resume => {
+                            if let Some(s) = &sink {
+                                s.play();
+                            }
+                        }
+                        Cmd::Volume(v) => {
+                            if let Some(s) = &sink {
+                                s.set_volume(v);
+                            }
+                        }
+                        Cmd::Stop => {
+                            if let Some(s) = sink.take() {
+                                s.stop();
+                            }
+                        }
+                    }
+                }
+            });
+            Self { tx, paused: AtomicBool::new(false) }
+        }
+
+        /// Starts a new track at `position` seconds in, replacing whatever was playing.
+        pub fn play(&self, url: String, volume: f32, position: f64) {
+            self.paused.store(false, Ordering::SeqCst);
+            let _ = self.tx.send(Cmd::Play { url, volume, position });
+        }
+
+        pub fn toggle_play_pause(&self) {
+            let now_paused = !self.paused.load(Ordering::SeqCst);
+            self.paused.store(now_paused, Ordering::SeqCst);
+            let _ = self.tx.send(if now_paused { Cmd::Pause } else { Cmd::Resume });
+        }
+
+        pub fn set_volume(&self, v: f32) {
+            let _ = self.tx.send(Cmd::Volume(v));
+        }
+
+        pub fn stop(&self) {
+            self.paused.store(false, Ordering::SeqCst);
+            let _ = self.tx.send(Cmd::Stop);
+        }
+    }
+}
+
 #[tauri::command]
 fn report_playback(app: tauri::AppHandle, info: PlaybackHandoff) {
-    if let Some(player) = app.get_webview_window("player") {
-        let _ = player.emit("mirror-playback", info);
+    #[cfg(desktop)]
+    {
+        if let Some(audio) = app.try_state::<background_audio::BackgroundAudio>() {
+            audio.play(info.src, info.volume as f32, info.position);
+        }
+    }
+    #[cfg(not(desktop))]
+    {
+        if let Some(player) = app.get_webview_window("player") {
+            let _ = player.emit("mirror-playback", info);
+        }
+    }
+}
+
+/// Called the moment a page's own audio genuinely starts playing for real (see inject.js) --
+/// stops anything left over from a previous page's handoff so the two are never briefly audible
+/// at once.
+#[tauri::command]
+fn stop_background_audio(app: tauri::AppHandle) {
+    #[cfg(desktop)]
+    {
+        if let Some(audio) = app.try_state::<background_audio::BackgroundAudio>() {
+            audio.stop();
+        }
+    }
+    #[cfg(not(desktop))]
+    {
+        if let Some(player) = app.get_webview_window("player") {
+            #[derive(Clone, serde::Serialize)]
+            struct Ctl {
+                action: String,
+            }
+            let _ = player.emit("player-control", Ctl { action: "stop".into() });
+        }
     }
 }
 
@@ -86,6 +238,21 @@ fn get_now_playing(state: tauri::State<NowPlayingState>) -> Option<NowPlayingMet
 /// action: "playPause" | "seek" (value = seconds) | "volume" (value = 0..1) | "next" | "prev"
 #[tauri::command]
 fn player_control(app: tauri::AppHandle, action: String, value: Option<f64>) {
+    #[cfg(desktop)]
+    {
+        if let Some(audio) = app.try_state::<background_audio::BackgroundAudio>() {
+            match action.as_str() {
+                "playPause" => audio.toggle_play_pause(),
+                "volume" => {
+                    if let Some(v) = value {
+                        audio.set_volume(v as f32);
+                    }
+                }
+                _ => {} // "seek": not supported by rodio's Sink; "next"/"prev": handled in JS
+            }
+        }
+    }
+
     #[derive(Clone, serde::Serialize)]
     struct Ctl {
         action: String,
@@ -95,6 +262,7 @@ fn player_control(app: tauri::AppHandle, action: String, value: Option<f64>) {
     if let Some(main) = app.get_webview_window("main") {
         let _ = main.emit("player-control", payload.clone());
     }
+    #[cfg(not(desktop))]
     if let Some(player) = app.get_webview_window("player") {
         let _ = player.emit("player-control", payload);
     }
@@ -265,6 +433,7 @@ pub fn run() {
             report_now_playing_meta,
             get_now_playing,
             player_control,
+            stop_background_audio,
             #[cfg(not(desktop))]
             connect_discord,
             #[cfg(not(desktop))]
@@ -304,9 +473,14 @@ pub fn run() {
                 .initialization_script(include_str!("../inject.js"))
                 .build()?;
 
-            // Hidden, never-navigating window: just hosts <audio id="a"> (src/player.html) so a
-            // track can keep playing after the visible page above navigates away. See the big
-            // comment near report_playback/player_control for the handoff design.
+            #[cfg(desktop)]
+            app.manage(background_audio::BackgroundAudio::spawn());
+
+            // Mobile only: hidden, never-navigating window hosting <audio id="a">
+            // (src/player.html), so a track can keep playing after the visible page above
+            // navigates away. Desktop does this with native audio instead -- see
+            // background_audio above -- specifically to avoid needing this at all.
+            #[cfg(not(desktop))]
             WebviewWindowBuilder::new(app, "player", WebviewUrl::App("player.html".into()))
                 .visible(false)
                 .inner_size(1.0, 1.0)

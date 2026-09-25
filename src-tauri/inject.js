@@ -105,7 +105,7 @@
     $('.seek').addEventListener('change', (e) => {
       seeking = false;
       const frac = Number(e.target.value) / 1000;
-      overlayControl('seek', frac * (localAudioIsSource() ? (audio.duration || 0) : 0));
+      overlayControl('seek', frac * (localAudio?.duration || 0));
     });
     $('.play').onclick = () => overlayControl('playPause');
     $('.prev').onclick = () => overlayControl('prev');
@@ -123,18 +123,35 @@
   }
   const overlay = buildOverlay();
 
-  // `played` (declared in start()) tells us whether THIS page's own <audio> is the thing making
-  // sound right now. If it isn't (fresh page, nothing clicked yet -- but something is still
-  // playing in the background from a page we navigated away from), route controls to that
-  // background player instead of a local <audio> that has nothing loaded into it.
-  function localAudioIsSource() { return typeof played !== 'undefined' && played; }
+  // `localAudio` and `played` are declared here (not inside start()) on purpose -- an earlier
+  // version had `played` as a local inside start(), which meant this check below was always
+  // silently false and every control always went to the background player, even on a page that
+  // had real, live audio right there. `played` becomes true the moment this page's own <audio>
+  // genuinely starts playing (see start()); until then, or on a page with no player at all,
+  // there's nothing local to control, so overlayControl below falls through to the background.
+  let localAudio = null;
+  let played = false;
+  let stoppedBackground = false;
+  let lastMeta = { title: 'Nothing playing', artist: '', artwork: '', paused: true };
+
+  function showMeta(patch) {
+    lastMeta = { ...lastMeta, ...patch };
+    overlay.setMeta(lastMeta);
+  }
+
   function overlayControl(action, value) {
-    if (localAudioIsSource()) {
-      if (action === 'playPause') { audio.paused ? audio.play().catch(() => {}) : audio.pause(); }
-      else if (action === 'seek') audio.currentTime = value;
-      else if (action === 'next' || action === 'prev') clickSiteButton(action);
-      // volume isn't exposed in the overlay UI (kept simple); wire a slider in later if wanted.
+    const localIsReal = localAudio && played;
+    if (action === 'next' || action === 'prev') {
+      if (localIsReal) clickSiteButton(action);
+      return; // no equivalent once handed off to the background player
+    }
+    if (localIsReal) {
+      // Same element the site's own bar uses -- no separate copy to fall out of sync with.
+      if (action === 'playPause') { localAudio.paused ? localAudio.play().catch(() => {}) : localAudio.pause(); }
+      else if (action === 'seek') localAudio.currentTime = value;
+      else if (action === 'volume') localAudio.volume = value;
     } else {
+      if (action === 'playPause') showMeta({ paused: !lastMeta.paused }); // no local event loop to feed this back
       invoke('player_control', { action, value });
     }
   }
@@ -153,17 +170,20 @@
 
   // Backfill immediately on load (covers "opened a page where nothing plays, but something is
   // still going from before"), then stay live for as long as this page is open.
-  invoke('get_now_playing').then((m) => { if (m) overlay.setMeta(m); });
-  window.__TAURI__.event.listen('now-playing-meta', (e) => { if (!localAudioIsSource()) overlay.setMeta(e.payload); });
-  // Mobile lockscreen buttons land here too (see player_control in lib.rs); only meaningful
-  // while this page's own audio is the active source.
+  invoke('get_now_playing').then((m) => { if (m) showMeta(m); });
+  window.__TAURI__.event.listen('now-playing-meta', (e) => showMeta(e.payload));
+  // Mobile lockscreen (or any other external caller of player_control) landing here. Only
+  // relevant when THIS page's own audio is the real, live source -- if it's the background
+  // player instead, Rust already applied the action directly (see player_control in lib.rs), no
+  // JS round-trip needed for that case.
   window.__TAURI__.event.listen('player-control', (e) => {
-    if (!localAudioIsSource()) return;
     const { action, value } = e.payload;
-    if (action === 'playPause') { audio.paused ? audio.play().catch(() => {}) : audio.pause(); }
-    else if (action === 'seek' && typeof value === 'number') audio.currentTime = value;
-    else if (action === 'volume' && typeof value === 'number') audio.volume = value;
-    else if (action === 'next' || action === 'prev') clickSiteButton(action);
+    const localIsReal = localAudio && played;
+    if (action === 'next' || action === 'prev') { if (localIsReal) clickSiteButton(action); return; }
+    if (!localIsReal) return;
+    if (action === 'playPause') { localAudio.paused ? localAudio.play().catch(() => {}) : localAudio.pause(); }
+    else if (action === 'seek' && typeof value === 'number') localAudio.currentTime = value;
+    else if (action === 'volume' && typeof value === 'number') localAudio.volume = value;
   });
 
   // ---- Manual reload: Ctrl+R / Cmd+R (Bluetooth keyboards), and pull-down-to-refresh. ----
@@ -237,8 +257,9 @@
   function start() {
     const audio = document.getElementById('audio1');
     if (!audio) return;
+    localAudio = audio; // real, audible source for as long as this page is open -- see below
 
-    let played = false, seq = 0, timer = 0, last = null;
+    let seq = 0, timer = 0, last = null;
 
     async function sync() {
       const my = ++seq;
@@ -288,10 +309,18 @@
       maybeConnectDiscord(paused);
       syncMediaSession(audio, track, who, cover);
 
-      // Overlay: instant local update, plus tell Rust so the *next* page's overlay (and, on
-      // mobile, the lockscreen) can show this too.
-      overlay.setMeta({ title: track, artist: who, artwork: cover, paused });
+      // This page's own audio is the single, real, audible source (overlayControl above talks
+      // to it directly) -- so just reflect its actual live state, same as the Discord presence
+      // right above. No gating on "is this a new track": every real change here is real.
+      showMeta({ title: track, artist: who, artwork: cover, paused });
       invoke('report_now_playing_meta', { meta: { title: track, artist: who, artwork: cover, paused } });
+
+      // The moment this page's own audio has genuinely started playing for real, make sure
+      // nothing is left over-lapping from a previous page's handoff (see pagehide below).
+      if (!stoppedBackground) {
+        stoppedBackground = true;
+        invoke('stop_background_audio');
+      }
     }
 
     function clearPresence() { seq++; last = null; invoke('clear_presence'); clearMediaSession(); }
@@ -310,18 +339,41 @@
     if (title) new MutationObserver(schedule).observe(title, { childList: true, characterData: true, subtree: true });
     new MutationObserver(schedule).observe(audio, { attributes: true, attributeFilter: ['src'] });
 
-    // Keepalive handoff: this page is about to be destroyed by navigation. If it was mid-playback,
-    // hand the exact position off to the hidden background player so the song keeps going on
-    // whatever page loads next -- see the big comment above report_playback/player_control in
-    // lib.rs. If the next page starts something of its own, that page's own sync() overwrites
-    // this via the same command, so "a new song wins" falls out for free.
-    addEventListener('pagehide', () => {
+    // switch tearing this <audio> out without one). If it was actually playing, hand the exact
+    // position off to the background player so the song keeps going wherever the user ends up
+    // next; stop_background_audio above cancels this the moment a next page's own real audio
+    // actually starts.
+    //
+    // Three separate triggers, because relying on just one silently loses the handoff:
+    //  - `pagehide` fires only for a real browser navigation, AND it fires as the page is
+    //    already being torn down -- invoke() is async IPC to Rust, so racing it against pagehide
+    //    can lose the message entirely (unload handlers historically have this exact problem,
+    //    which is why sendBeacon exists for analytics). Kept as a fallback, not the main path.
+    //  - A capturing click listener on internal links fires BEFORE the browser starts navigating
+    //    at all, giving the invoke a full navigation's worth of time to actually arrive. This is
+    //    the main path for a real link click.
+    //  - A MutationObserver catches this exact <audio> node being removed from the document
+    //    without any real navigation at all (this site may swap sections via in-page JS) --
+    //    pagehide never fires for that case, so without this the handoff just never happens.
+    let handedOff = false;
+    function doHandoff() {
+      if (handedOff) return;
       const src = audio.currentSrc || audio.src;
       if (!audio.paused && !audio.ended && src) {
+        handedOff = true;
         invoke('report_playback', { info: { src, position: audio.currentTime, volume: audio.volume } });
       }
-      clearPresence();
-    });
+    }
+
+    document.addEventListener('click', (e) => {
+      const a = e.target.closest?.('a[href]');
+      if (a && !a.getAttribute('href').startsWith('#')) doHandoff();
+    }, true);
+
+    new MutationObserver(() => { if (!audio.isConnected) doHandoff(); })
+      .observe(document.documentElement, { childList: true, subtree: true });
+
+    addEventListener('pagehide', () => { doHandoff(); clearPresence(); });
   }
 
   if (document.readyState === 'loading') addEventListener('DOMContentLoaded', start);

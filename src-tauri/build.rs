@@ -13,6 +13,7 @@ fn main() {
                 "report_now_playing_meta",
                 "get_now_playing",
                 "player_control",
+                "stop_background_audio",
             ]),
         ),
     )

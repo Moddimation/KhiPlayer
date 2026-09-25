@@ -29,6 +29,11 @@ class MainActivity : TauriActivity() {
     override fun onWebViewCreate(webView: WebView) {
         super.onWebViewCreate(webView)
         this.webView = webView
+        // Same class of problem as desktop had (see background_audio in lib.rs) for the hidden
+        // "player" window: audio in a WebView nobody ever taps in gets blocked by default. Unlike
+        // desktop, Android has one official, documented setting for exactly this -- so unlike
+        // desktop this one's fine to just flip, no native-audio rewrite needed here.
+        webView.settings.mediaPlaybackRequiresUserGesture = false
     }
 
     override fun setContentView(view: View) {

@@ -25,6 +25,11 @@ anyhow = "1"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 discord-rich-presence = "1"
+# Native background audio -- see the background_audio module in lib.rs for why this replaced a
+# hidden webview. If this exact version doesn't resolve, `cargo add rodio` and bump this line to
+# whatever it picks.
+rodio = "0.19"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 
 # ---- mobile-only: OAuth2 (PKCE) + Discord Headless Sessions API ----
 [target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]

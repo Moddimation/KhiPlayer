@@ -24,6 +24,7 @@
     if (action === 'playPause') { a.paused ? a.play().catch(() => {}) : a.pause(); }
     else if (action === 'seek' && typeof value === 'number') a.currentTime = value;
     else if (action === 'volume' && typeof value === 'number') a.volume = value;
+    else if (action === 'stop') { a.pause(); a.removeAttribute('src'); a.load(); }
     // 'next' / 'prev' only make sense with the real site's playlist open in the main window;
     // see inject.js's player-control listener.
   });

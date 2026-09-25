@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-stop-background-audio"
+description = "Enables the stop_background_audio command without any pre-configured scope."
+commands.allow = ["stop_background_audio"]
+
+[[permission]]
+identifier = "deny-stop-background-audio"
+description = "Denies the stop_background_audio command without any pre-configured scope."
+commands.deny = ["stop_background_audio"]

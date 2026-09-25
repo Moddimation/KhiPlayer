@@ -16,6 +16,7 @@
     "allow-report-playback",
     "allow-report-now-playing-meta",
     "allow-get-now-playing",
-    "allow-player-control"
+    "allow-player-control",
+    "allow-stop-background-audio"
   ]
 }
