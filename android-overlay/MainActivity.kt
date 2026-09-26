@@ -1,7 +1,6 @@
 package dev.local.khinsider
 
 import android.view.KeyEvent
-import android.view.View
 import android.view.ViewGroup
 import android.webkit.WebView
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
@@ -17,12 +16,19 @@ import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 //      a JS keydown listener, but that only fires once the page has finished loading -- this
 //      covers it before/while that isn't true, e.g. if the page is stuck loading).
 //
-// IMPORTANT: TauriActivity attaches the WebView itself by calling `setContentView(webView)`
-// *after* `onWebViewCreate` returns. An earlier version of this file tried to reparent the
-// WebView into a SwipeRefreshLayout from inside onWebViewCreate -- that raced Tauri's own attach
-// and crashed with "The specified child already has a parent." The fix is to intercept
-// setContentView itself and wrap whatever it's given, instead of fighting the base class over
-// who attaches the WebView.
+// IMPORTANT, two dead ends already tried here, so a third attempt doesn't repeat them:
+//   1. Reparenting the WebView into a SwipeRefreshLayout directly inside onWebViewCreate crashed
+//      with "The specified child already has a parent" -- TauriActivity calls
+//      setContentView(webView) itself right after onWebViewCreate returns, and that collided
+//      with our own reparenting.
+//   2. Overriding setContentView(view: View) to intercept that call doesn't even compile
+//      ("'setContentView' overrides nothing") -- TauriActivity (or something in its hierarchy)
+//      apparently redeclares it without Kotlin's `open`, which hides the Android SDK's own open
+//      method from being overridden here.
+// The fix that actually works: do nothing in onWebViewCreate except grab the reference, then
+// `post {}` the reparenting so it runs *after* the current call stack -- including Tauri's own
+// setContentView(webView) -- has already finished. By the time our posted block runs, the
+// WebView has a real parent we can safely detach it from.
 class MainActivity : TauriActivity() {
     private lateinit var webView: WebView
 
@@ -34,17 +40,16 @@ class MainActivity : TauriActivity() {
         // desktop, Android has one official, documented setting for exactly this -- so unlike
         // desktop this one's fine to just flip, no native-audio rewrite needed here.
         webView.settings.mediaPlaybackRequiresUserGesture = false
+        webView.post { wrapInSwipeRefresh(webView) }
     }
 
-    override fun setContentView(view: View) {
-        if (view !== webView) {
-            super.setContentView(view)
-            return
-        }
+    private fun wrapInSwipeRefresh(webView: WebView) {
+        val parent = webView.parent as? ViewGroup ?: return
+        parent.removeView(webView)
 
         val swipeRefresh = SwipeRefreshLayout(this).apply {
             addView(
-                view,
+                webView,
                 ViewGroup.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT,
@@ -60,7 +65,7 @@ class MainActivity : TauriActivity() {
         }
         stopRefreshingOnLoad(swipeRefresh, webView)
 
-        super.setContentView(swipeRefresh)
+        setContentView(swipeRefresh)
     }
 
     private fun stopRefreshingOnLoad(swipeRefresh: SwipeRefreshLayout, webView: WebView) {

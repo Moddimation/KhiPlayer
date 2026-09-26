@@ -339,6 +339,7 @@
     if (title) new MutationObserver(schedule).observe(title, { childList: true, characterData: true, subtree: true });
     new MutationObserver(schedule).observe(audio, { attributes: true, attributeFilter: ['src'] });
 
+    // This page is about to be destroyed (real navigation, or this site's own in-page section
     // switch tearing this <audio> out without one). If it was actually playing, hand the exact
     // position off to the background player so the song keeps going wherever the user ends up
     // next; stop_background_audio above cancels this the moment a next page's own real audio

@@ -7,6 +7,9 @@ on:
 
 jobs:
   release:
+    concurrency:
+      group: release-${{ github.event.workflow_run.head_branch }}
+      cancel-in-progress: true
     # Only ever fires for pushes (not pull_request builds), and only once the triggering build
     # actually succeeded.
     if: >
