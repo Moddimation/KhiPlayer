@@ -94,7 +94,20 @@
           </div>
         </div>
       </div>`;
-    document.documentElement.appendChild(host);
+    // initialization_script runs at document-creation. On WebView2 (Windows) document.documentElement
+    // is still null at that point, so a direct appendChild throws and kills the whole script (no
+    // overlay, no Discord RPC). WebKitGTK (Linux) already has it, which is why Linux worked.
+    const mount = () => {
+      const parent = document.documentElement || document.body;
+      if (parent) { parent.appendChild(host); return true; }
+      return false;
+    };
+    if (!mount()) {
+      const retry = () => { if (!host.isConnected) mount(); };
+      document.addEventListener('readystatechange', retry);
+      addEventListener('DOMContentLoaded', retry);
+      new MutationObserver((_, obs) => { if (mount()) obs.disconnect(); }).observe(document, { childList: true });
+    }
 
     const $ = (s) => root.querySelector(s);
     const card = $('.card');
@@ -171,12 +184,12 @@
   // Backfill immediately on load (covers "opened a page where nothing plays, but something is
   // still going from before"), then stay live for as long as this page is open.
   invoke('get_now_playing').then((m) => { if (m) showMeta(m); });
-  window.__TAURI__.event.listen('now-playing-meta', (e) => showMeta(e.payload));
+  window.__TAURI__?.event?.listen('now-playing-meta', (e) => showMeta(e.payload));
   // Mobile lockscreen (or any other external caller of player_control) landing here. Only
   // relevant when THIS page's own audio is the real, live source -- if it's the background
   // player instead, Rust already applied the action directly (see player_control in lib.rs), no
   // JS round-trip needed for that case.
-  window.__TAURI__.event.listen('player-control', (e) => {
+  window.__TAURI__?.event?.listen('player-control', (e) => {
     const { action, value } = e.payload;
     const localIsReal = localAudio && played;
     if (action === 'next' || action === 'prev') { if (localIsReal) clickSiteButton(action); return; }
